@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GitHub Contacts Scraper</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0d0f12;
+      --surface: #16191e;
+      --border: #2a2e36;
+      --text: #e6e9ef;
+      --muted: #8b919e;
+      --accent: #7c9ce0;
+      --accent-dim: #5a7bc0;
+      --success: #7dd3a3;
+      --danger: #e07d7d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "DM Sans", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+    .layout { max-width: 700px; margin: 0 auto; padding: 1.5rem; }
+    h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 1.5rem; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      margin-bottom: 1.25rem;
+    }
+    .card h2 { font-size: 1rem; margin: 0 0 1rem; color: var(--muted); font-weight: 600; }
+    .form-row { margin-bottom: 1rem; }
+    .form-row:last-child { margin-bottom: 0; }
+    label {
+      display: block;
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+    input[type="number"],
+    input[type="text"] {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.9rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+    }
+    input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    .btn {
+      padding: 0.5rem 1rem;
+      font-family: inherit;
+      font-size: 0.9rem;
+      font-weight: 500;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      cursor: pointer;
+    }
+    .btn:hover:not(:disabled) { background: var(--border); }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: var(--bg);
+    }
+    .btn.primary:hover:not(:disabled) { background: var(--accent-dim); border-color: var(--accent-dim); }
+    .btn.success { background: var(--success); border-color: var(--success); color: var(--bg); }
+    .btn.success:hover:not(:disabled) { filter: brightness(1.1); }
+    .progress-box {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.8rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.75rem;
+      max-height: 280px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--muted);
+      min-height: 120px;
+    }
+    .progress-box .line { margin: 0.15rem 0; }
+    .progress-box .line.err { color: var(--danger); }
+    .actions { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-top: 1rem; }
+    .status { font-size: 0.85rem; color: var(--muted); margin-top: 0.5rem; }
+    .status.done { color: var(--success); }
+    .status.error { color: var(--danger); }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <h1>GitHub Contacts Scraper</h1>
+
+    <div class="card">
+      <h2>Run scraper</h2>
+      <form id="runForm">
+        <div class="row">
+          <div class="form-row">
+            <label for="startPage">Start page</label>
+            <input type="number" id="startPage" name="startPage" min="1" value="1" required />
+          </div>
+          <div class="form-row">
+            <label for="endPage">End page</label>
+            <input type="number" id="endPage" name="endPage" min="1" value="1" required />
+          </div>
+        </div>
+        <div class="form-row">
+          <label for="query">Search query (e.g. language:python repos:&gt;1)</label>
+          <input type="text" id="query" name="query" placeholder="language:python repos:>1 followers:50..100 location:Berlin" required />
+        </div>
+        <div class="actions">
+          <button type="submit" class="btn primary" id="startBtn">Start scraping</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Progress</h2>
+      <div class="progress-box" id="progressLog"></div>
+      <p class="status" id="status"></p>
+      <div class="actions hidden" id="downloadArea">
+        <a id="downloadLink" class="btn success" href="/api/download" download>Download JSON</a>
+      </div>
+    </div>
+  </div>
+  <script>
+    const form = document.getElementById("runForm");
+    const startBtn = document.getElementById("startBtn");
+    const progressLog = document.getElementById("progressLog");
+    const statusEl = document.getElementById("status");
+    const downloadArea = document.getElementById("downloadArea");
+    const downloadLink = document.getElementById("downloadLink");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const startPage = parseInt(form.startPage.value, 10);
+      const endPage = parseInt(form.endPage.value, 10);
+      const query = form.query.value.trim();
+      if (!query) {
+        statusEl.textContent = "Enter a query.";
+        statusEl.className = "status error";
+        return;
+      }
+
+      startBtn.disabled = true;
+      progressLog.innerHTML = "";
+      statusEl.textContent = "Starting…";
+      statusEl.className = "status";
+      downloadArea.classList.add("hidden");
+
+      try {
+        const res = await fetch("/api/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ startPage, endPage, query }),
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: res.statusText }));
+          throw new Error(err.error || "Failed to start");
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n\n");
+          buffer = lines.pop() || "";
+          for (const chunk of lines) {
+            const match = chunk.match(/^event: (\w+)\ndata: (.+)/s);
+            if (!match) continue;
+            const [, event, dataStr] = match;
+            try {
+              const data = JSON.parse(dataStr);
+              if (event === "log") {
+                const line = document.createElement("div");
+                line.className = "line" + (data.source === "stderr" ? " err" : "");
+                line.textContent = data.message;
+                progressLog.appendChild(line);
+                progressLog.scrollTop = progressLog.scrollHeight;
+              } else if (event === "done") {
+                if (data.signal === "SIGTERM") {
+                  statusEl.textContent = "Connection was closed. Scrape may still be running in the background – refresh and click Download when it finishes.";
+                  statusEl.className = "status error";
+                } else {
+                  statusEl.textContent = data.code === 0 ? "Scraping finished." : `Exited with code ${data.code}.`;
+                  statusEl.className = "status " + (data.code === 0 ? "done" : "error");
+                }
+                downloadArea.classList.remove("hidden");
+                const filename = `github-contacts-${new Date().toISOString().slice(0, 10)}.json`;
+                downloadLink.download = filename;
+                downloadLink.href = "/api/download?t=" + Date.now();
+              } else if (event === "error") {
+                statusEl.textContent = "Error: " + (data.message || "Unknown");
+                statusEl.className = "status error";
+              }
+            } catch (_) {}
+          }
+        }
+      } catch (err) {
+        statusEl.textContent = "Error: " + err.message;
+        statusEl.className = "status error";
+      } finally {
+        startBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
