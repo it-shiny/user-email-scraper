@@ -184,6 +184,11 @@
           <label for="created">Account created (e.g. &gt;2020-01-01)</label>
           <input type="text" id="created" name="created" placeholder="e.g. >2020-01-01 or 2018-01-01..2022-12-31" />
         </div>
+        <div class="form-row optional">
+          <label for="inBio">Profile / bio contains</label>
+          <input type="text" id="inBio" name="inBio" placeholder='e.g. data engineer, "machine learning"' />
+          <small class="meta" style="display:block; margin-top:0.25rem; font-size:0.8rem;">Matches text in the user’s profile bio (use quotes for a phrase)</small>
+        </div>
         <p class="query-preview" id="queryPreview">Query: <span id="queryPreviewText">—</span></p>
         <div class="actions">
           <button type="submit" class="btn primary" id="startBtn">Start scraping</button>
@@ -214,7 +219,7 @@
       languageOtherRow.classList.toggle("hidden", languageSelect.value !== "other");
       updateQueryPreview();
     });
-    ["reposMin", "followersMin", "followersMax", "location", "created", "languageOther"].forEach(id => {
+    ["reposMin", "followersMin", "followersMax", "location", "created", "inBio", "languageOther"].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.addEventListener("input", updateQueryPreview);
     });
@@ -249,6 +254,11 @@
       if (location) parts.push("location:" + location);
       const created = form.created.value.trim();
       if (created) parts.push("created:" + created);
+      const inBio = form.inBio.value.trim();
+      if (inBio) {
+        const phrase = inBio.includes(" ") ? `"${inBio.replace(/"/g, "")}"` : inBio;
+        parts.unshift(phrase);
+      }
       parts.push("type:user");
       return parts.join(" ");
     }
