@@ -1,241 +1,140 @@
-import { Octokit } from "@octokit/rest";
-import fetch from "node-fetch";
-import mongoose from 'mongoose';
-import dotenv from 'dotenv';
-import User from './models/User.js';
+import dotenv from "dotenv";
+import { createGitHubClient } from "./lib/github.js";
+import { loadUsers, saveUser, hasUser } from "./lib/storage.js";
 
-// Load environment variables from .env file
 dotenv.config();
 
-const pageSize = 20;
+const PAGE_SIZE = 20;
+const OUTPUT_PATH = process.env.OUTPUT_PATH || "data/users.json";
 
-const [,, start, end, ...queryParts] = process.argv;
-const query = queryParts.join(' ');
+// Parse CLI: node index.js [startPage] [endPage] [query...]
+// - With args: node index.js 1 3 language:python repos:>1  → uses CLI query
+// - No args: node index.js  → uses QUERY, START_PAGE, END_PAGE from .env (default 1 1)
+const [, , startArg, endArg, ...queryParts] = process.argv;
+const queryFromCli = queryParts.join(" ").trim();
+const query = queryFromCli || process.env.QUERY || "";
 
-const startPage = parseInt(start, 10);
-const endPage = parseInt(end, 10);
+const startPageParsed = parseInt(startArg, 10);
+const endPageParsed = parseInt(endArg, 10);
+const startPage = !isNaN(startPageParsed) ? startPageParsed : (parseInt(process.env.START_PAGE, 10) || 1);
+const endPage = !isNaN(endPageParsed) ? endPageParsed : (parseInt(process.env.END_PAGE, 10) || 1);
 
-if (isNaN(startPage) || isNaN(endPage) || !query) {
-  console.error("Please provide valid start page number, end page number, and query.");
+if (!query) {
+  const msg = "Usage: node index.js <startPage> <endPage> [query]\nExample: node index.js 1 5 language:javascript repos:>1\nOr set QUERY (and optionally START_PAGE, END_PAGE) in .env";
+  process.stderr.write(msg + "\n");
   process.exit(1);
 }
-// Get the GitHub tokens from the environment variables
-const githubTokens = process.env.GITHUB_TOKENS.split(',');
 
-if (!githubTokens.length) {
-  console.error("GitHub tokens are not defined. Please set the GITHUB_TOKENS environment variable.");
+const rawTokens = process.env.GITHUB_TOKENS || process.env.GITHUB_PERSONAL_ACCESS_TOKEN || "";
+const tokens = rawTokens.split(",").map((t) => t.trim()).filter(Boolean);
+
+if (!tokens.length) {
+  process.stderr.write("Error: Set GITHUB_TOKENS or GITHUB_PERSONAL_ACCESS_TOKEN in .env\n");
   process.exit(1);
 }
 
-let currentTokenIndex = 0;
+const github = createGitHubClient(tokens);
 
-function getOctokit() {
-  return new Octokit({
-    auth: githubTokens[currentTokenIndex]
-  });
+function normalizeEmail(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value) && value.length > 0 && typeof value[0] === "string") return value[0];
+  return null;
 }
 
-function cycleToken() {
-  currentTokenIndex = (currentTokenIndex + 1) % githubTokens.length;
+function buildUserRecord(userDetails, mostStarredRepo, mostForkedRepo, isEmailFromCommit, pageNum) {
+  return {
+    username: userDetails.username,
+    fullName: userDetails.fullName ?? null,
+    email: userDetails.email ?? null,
+    location: userDetails.location ?? null,
+    mostStarredRepo: mostStarredRepo
+      ? { name: mostStarredRepo.name, stars: mostStarredRepo.stargazers_count }
+      : null,
+    mostForkedRepo: mostForkedRepo
+      ? { name: mostForkedRepo.name, forks: mostForkedRepo.forks_count }
+      : null,
+    isEmailFromCommit: isEmailFromCommit,
+    query,
+    pageNum,
+    pageSize: PAGE_SIZE,
+    scrapedAt: new Date().toISOString(),
+  };
 }
 
-async function searchUsers(query, pageNum, perPage = 20) {
-  try {
-    const octokit = getOctokit();
-    const response = await octokit.request('GET /search/users', {
-      q: query,
-      per_page: perPage,
-      page: pageNum
-    });
-    cycleToken();
-    return response.data.items;
-  } catch (error) {
-    if (error.message.includes('Cannot read properties of undefined') || error.message.includes('NetworkError')) {
-      console.error("Network error, waiting for 5 minutes...");
-      await new Promise(resolve => setTimeout(resolve, 5 * 60 * 1000));
-      return searchUsers(query, pageNum, perPage); // Retry the request
-    }
-    if (error.status === 403) {
-      console.error("Rate limit exceeded. Waiting 5 minutes before retrying...");
-      await delay(5 * 60 * 1000); // Wait 5 minutes
-    } else {
-      // console.error("Error searching users:", error);
-      return [];
-    }
+async function findEmailFromCommits(username, repos) {
+  for (const repo of repos) {
+    const email = await github.getCommitAuthorEmail(username, repo.name);
+    if (email) return email;
   }
-}
-
-async function getUserDetails(username) {
-  try {
-    const octokit = getOctokit();
-    const { data } = await octokit.users.getByUsername({
-      username
-    });
-    cycleToken();
-    return {
-      email: data.email,
-      fullName: data.name,
-      username: data.login,
-      location: data.location
-    };
-  } catch (error) {
-    if (error.status === 403) {
-      console.error("Rate limit exceeded. Waiting 5 minutes before retrying...");
-      await delay(5 * 60 * 1000); // Wait 5 minutes
-    } else {
-      // console.error("Error searching users:", error);
-      return [];
-    }
-  }
-}
-
-async function getNonForkRepos(username) {
-  try {
-    const octokit = getOctokit();
-    const { data } = await octokit.repos.listForUser({
-      username,
-      type: "owner",
-      per_page: 100
-    });
-    cycleToken();
-    return data.filter(repo => !repo.fork);
-  } catch (error) {
-    if (error.status === 403) {
-      console.error("Rate limit exceeded. Waiting 5 minutes before retrying...");
-      await delay(5 * 60 * 1000); // Wait 5 minutes
-    } else {
-      // console.error("Error searching users:", error);
-      return [];
-    }
-  }
-}
-
-async function getUserCommits(username, repo) {
-  try {
-    const octokit = getOctokit();
-    const response = await octokit.repos.listCommits({
-      owner: username,
-      repo,
-      author: username,
-      per_page: 1
-    });
-    cycleToken();
-    if (response.status !== 200) {
-      throw new Error(`Failed to fetch commits: ${response.statusText}`);
-    }
-    return response.data;
-  } catch (error) {
-    if (error.status === 403) {
-      console.error("Rate limit exceeded. Waiting 5 minutes before retrying...");
-      await delay(5 * 60 * 1000); // Wait 5 minutes
-    } else {
-      // console.error("Error searching users:", error);
-      return [];
-    }
-  }
-}
-
-async function getEmailFromCommit(commitUrl) {
-  try {
-    const response = await fetch(commitUrl);
-    const commitData = await response.json();
-    const email = commitData.commit.author.email;
-    return email;
-  } catch (error) {
-    if (error.status === 403) {
-      console.error("Rate limit exceeded. Waiting 5 minutes before retrying...");
-      await delay(5 * 60 * 1000); // Wait 5 minutes
-    } else {
-      // console.error("Error searching users:", error);
-      return [];
-    }
-  }
-}
-
-async function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return null;
 }
 
 async function main() {
-  await mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true });
+  const { users, path: outputPath } = await loadUsers(OUTPUT_PATH);
+  let currentUsers = users;
+
   for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
-    console.log(`====> Processing Page: ${pageNum}`);
+    console.log(`====> Processing page ${pageNum}`);
 
-    const users = await searchUsers(query, pageNum, pageSize);
+    const items = await github.searchUsers(query, pageNum, PAGE_SIZE);
 
-    for (const user of users) {
-      if (user.type == "Organization") {
-        console.log(`User ${user.login} is Organization. Skipping...`);
+    for (const user of items) {
+      if (user.type === "Organization") {
+        console.log(`Skip organization: ${user.login}`);
         continue;
       }
-      const existingUser = await User.findOne({ username: user.login });
-      if (existingUser) {
-        console.log(`User ${user.login} already exists in the database. Skipping...`);
+
+      if (hasUser(currentUsers, user.login)) {
+        console.log(`Already saved: ${user.login}`);
         continue;
       }
-      const userDetails = await getUserDetails(user.login);
+
+      const userDetails = await github.getUserDetails(user.login);
       if (!userDetails) continue;
 
-      let mostStarredRepo = null;
-      let mostForkedRepo = null;
-      const repos = await getNonForkRepos(userDetails.username);
-      // Find the repo with the most stars and forks
-      mostStarredRepo = repos.reduce((max, repo) => repo.stargazers_count > (max?.stargazers_count || 0) ? repo : max, null);
-      mostForkedRepo = repos.reduce((max, repo) => repo.forks_count > (max?.forks_count || 0) ? repo : max, null);
+      const repos = await github.getNonForkRepos(userDetails.username);
+      const mostStarredRepo = repos.reduce(
+        (max, r) => (r.stargazers_count > (max?.stargazers_count ?? 0) ? r : max),
+        null
+      );
+      const mostForkedRepo = repos.reduce(
+        (max, r) => (r.forks_count > (max?.forks_count ?? 0) ? r : max),
+        null
+      );
 
       let isEmailFromCommit = false;
-      if (!userDetails.email || typeof userDetails.email != "string") {
-        console.log(`No public email for ${userDetails.username}. Fetching repositories...`);
+      let email = normalizeEmail(userDetails.email);
 
-        for (const repo of repos) {
-          const commits = await getUserCommits(userDetails.username, repo.name);
-          if (commits.length > 0) {
-            const commitEmail = await getEmailFromCommit(commits[0].url);
-            if (commitEmail) {
-              userDetails.email = commitEmail;
-              isEmailFromCommit = true;
-              break;  // Stop after finding the first email
-            }
-          }
+      if (!email || email.includes("noreply")) {
+        console.log(`No public email for ${userDetails.username}, checking commits...`);
+        const commitEmail = await findEmailFromCommits(userDetails.username, repos);
+        if (commitEmail) {
+          email = commitEmail;
+          isEmailFromCommit = true;
         }
       }
-      if (userDetails.email && typeof userDetails.email == "object" && userDetails.email.length > 0) {
-        userDetails.email = userDetails.email[0];
-      }
-      if (userDetails.email && typeof userDetails.email == "string" && userDetails.email.indexOf("noreply") == -1) {
-        const locationMap = {
-          location: userDetails.location
-        };
-  
-        const userDoc = new User({
-          fullName: userDetails.fullName,
-          username: userDetails.username,
-          location: locationMap,
-          mostStarredRepo: {
-            name: mostStarredRepo?.name || null,
-            stars: mostStarredRepo?.stargazers_count || 0
-          },
-          mostForkedRepo: {
-            name: mostForkedRepo?.name || null,
-            forks: mostForkedRepo?.forks_count || 0
-          },
-          email: typeof userDetails.email == "string" ? userDetails.email : null,
-          isEmailFromCommit: isEmailFromCommit,
-          query: query,
-          pageSize: pageSize,
-          pageNum: pageNum
-        });
-  
-        await userDoc.save();
-  
-        console.log(`Saved user: ${userDetails.username}`);
+
+      if (email && !email.includes("noreply")) {
+        const record = buildUserRecord(
+          { ...userDetails, email },
+          mostStarredRepo,
+          mostForkedRepo,
+          isEmailFromCommit,
+          pageNum
+        );
+        currentUsers = await saveUser(record, outputPath, currentUsers);
+        console.log(`Saved: ${userDetails.username}`);
       } else {
-        console.log(`Unsaved user: ${userDetails.username}, can't find email`);
+        console.log(`Skipped (no email): ${userDetails.username}`);
       }
     }
   }
 
-  mongoose.connection.close();
+  console.log(`Done. Output: ${OUTPUT_PATH}`);
 }
 
-main();
+main().catch((err) => {
+  process.stderr.write(`Error: ${err.message}\n`);
+  if (process.env.DEBUG) process.stderr.write(err.stack + "\n");
+  process.exit(1);
+});
