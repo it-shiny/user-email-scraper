@@ -1,11 +1,11 @@
 import dotenv from "dotenv";
 import { createGitHubClient } from "./lib/github.js";
-import { loadUsers, saveUser, hasUser } from "./lib/storage.js";
+import { initFreshOutput, saveUser, hasUser } from "./lib/storage.js";
 
 dotenv.config();
 
 const PAGE_SIZE = 20;
-const OUTPUT_PATH = process.env.OUTPUT_PATH || "data/users.json";
+const OUTPUT_PATH = process.env.OUTPUT_PATH || `data/users-${new Date().toISOString().slice(0, 10)}.json`;
 
 // Parse CLI: node index.js [startPage] [endPage] [query...]
 // - With args: node index.js 1 3 language:python repos:>1  → uses CLI query
@@ -70,8 +70,9 @@ async function findEmailFromCommits(username, repos) {
 }
 
 async function main() {
-  const { users, path: outputPath } = await loadUsers(OUTPUT_PATH);
-  let currentUsers = users;
+  const outputPath = OUTPUT_PATH;
+  await initFreshOutput(outputPath);
+  let currentUsers = [];
 
   for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
     console.log(`====> Processing page ${pageNum}`);
